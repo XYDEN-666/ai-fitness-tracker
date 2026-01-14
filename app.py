@@ -16,7 +16,9 @@ try:
 except Exception as e:
     st.error(f"API Key Error: {e}")
 
-# --- DATABASE CONNECTION ---
+# --- DATABASE CONNECTION (OPTIMIZED) ---
+# This decorator keeps the connection open so it doesn't reload every time
+@st.cache_resource
 def get_db_connection():
     key_content = st.secrets["gcp_service_account"]["json_key"]
     creds_dict = json.loads(key_content, strict=False)
@@ -27,30 +29,19 @@ def get_db_connection():
 
 # --- THE BRAIN ---
 def parse_workout(text):
-    # We use the specific model you found in the list
     MODEL_NAME = 'models/gemini-2.5-flash'
-    
     try:
         model = genai.GenerativeModel(MODEL_NAME)
         prompt = f"""
         Extract workout data from: "{text}".
         Return ONLY a JSON list with keys: "exercise", "weight" (int), "reps" (int), "notes".
         If weight is missing, use 0.
-        
-        Example JSON output:
-        [
-            {{"exercise": "Squat", "weight": 100, "reps": 5, "notes": "Hard"}},
-            {{"exercise": "Squat", "weight": 100, "reps": 5, "notes": "Hard"}}
-        ]
         """
         response = model.generate_content(prompt)
-        
-        # Clean up the text (remove markdown `json ... ` if present)
         cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(cleaned_text)
-        
     except Exception as e:
-        st.error(f"AI Error ({MODEL_NAME}): {e}")
+        st.error(f"AI Error: {e}")
         return None
 
 # --- MAIN FORM ---
@@ -59,39 +50,47 @@ with st.form("workout_form"):
     submitted = st.form_submit_button("Log Workout")
 
 if submitted and user_input:
-    with st.spinner("AI is processing..."):
+    # 1. AI Processing
+    with st.spinner("AI is thinking..."):
         workout_data = parse_workout(user_input)
-        
-        if workout_data:
-            # Save to Sheets
-            client = get_db_connection()
-            sh = client.open("My Workout DB")
-            
-            # Save to 'Exercises' tab
-            ex_sheet = sh.worksheet("Exercises")
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            rows = []
-            for item in workout_data:
-                rows.append([
-                    timestamp,
-                    item.get('exercise', 'Unknown'),
-                    item.get('weight', 0),
-                    item.get('reps', 0),
-                    item.get('notes', '')
-                ])
-            
-            ex_sheet.append_rows(rows)
-            
-            st.success("✅ Workout Logged!")
-            st.table(pd.DataFrame(workout_data))
-        else:
-            st.error("Could not parse data.")
 
-# --- HISTORY PREVIEW ---
-if st.checkbox("Show History"):
+    # 2. Saving to DB
+    if workout_data:
+        with st.spinner("Saving to Google Sheets..."):
+            try:
+                client = get_db_connection()
+                sh = client.open("My Workout DB")
+                ex_sheet = sh.worksheet("Exercises")
+                
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                rows = []
+                for item in workout_data:
+                    rows.append([
+                        timestamp,
+                        item.get('exercise', 'Unknown'),
+                        item.get('weight', 0),
+                        item.get('reps', 0),
+                        item.get('notes', '')
+                    ])
+                
+                ex_sheet.append_rows(rows)
+                st.success(f"✅ Saved {len(rows)} sets!")
+                
+            except Exception as e:
+                st.error(f"Database Error: {e}")
+                # Clear cache if connection dropped
+                st.cache_resource.clear()
+    else:
+        st.error("Could not parse data.")
+
+# --- ANALYTICS PREVIEW (The Next Step) ---
+st.divider()
+st.subheader("📊 Quick Stats")
+if st.button("Refresh Charts"):
     client = get_db_connection()
     sheet = client.open("My Workout DB").worksheet("Exercises")
     data = sheet.get_all_records()
     if data:
-        st.dataframe(pd.DataFrame(data).tail(5))
+        df = pd.DataFrame(data)
+        # Quick Chart: Total Reps per Exercise
+        st.bar_chart(df.groupby("Exercise")["Reps"].sum())
