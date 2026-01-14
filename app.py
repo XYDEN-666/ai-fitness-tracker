@@ -16,22 +16,6 @@ try:
 except Exception as e:
     st.error(f"API Key Error: {e}")
 
-# --- DIAGNOSTIC TOOL (Use this if it fails) ---
-with st.expander("🛠️ Debugging Tools (Click if error)"):
-    st.write("If the app crashes, click below to see valid model names:")
-    if st.button("List My Available Models"):
-        try:
-            st.write("Asking Google...")
-            available_models = []
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    available_models.append(m.name)
-                    st.write(f"- {m.name}")
-            if not available_models:
-                st.error("No models found! Check your API Key.")
-        except Exception as e:
-            st.error(f"Error listing models: {e}")
-
 # --- DATABASE CONNECTION ---
 def get_db_connection():
     key_content = st.secrets["gcp_service_account"]["json_key"]
@@ -43,61 +27,47 @@ def get_db_connection():
 
 # --- THE BRAIN ---
 def parse_workout(text):
-    # We use a Try/Except block to automatically find a working model
-    working_model = None
+    # We use the specific model you found in the list
+    MODEL_NAME = 'models/gemini-2.5-flash'
     
-    # LIST OF MODELS TO TRY (In order of preference)
-    model_candidates = [
-        'gemini-1.5-flash',
-        'models/gemini-1.5-flash',
-        'gemini-pro',
-        'models/gemini-pro',
-        'gemini-1.5-flash-latest'
-    ]
-
-    response = None
-    last_error = ""
-
-    for model_name in model_candidates:
-        try:
-            model = genai.GenerativeModel(model_name)
-            prompt = f"""
-            Extract workout data from: "{text}".
-            Return ONLY a JSON list with keys: "exercise", "weight" (int), "reps" (int), "notes".
-            If weight is missing, use 0.
-            """
-            response = model.generate_content(prompt)
-            working_model = model_name # It worked!
-            break # Stop trying other models
-        except Exception as e:
-            last_error = str(e)
-            continue # Try the next model
-
-    if response:
-        try:
-            cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
-            return json.loads(cleaned_text), working_model
-        except:
-            return None, "JSON Error"
-    else:
-        st.error(f"All models failed. Last error: {last_error}")
-        return None, None
+    try:
+        model = genai.GenerativeModel(MODEL_NAME)
+        prompt = f"""
+        Extract workout data from: "{text}".
+        Return ONLY a JSON list with keys: "exercise", "weight" (int), "reps" (int), "notes".
+        If weight is missing, use 0.
+        
+        Example JSON output:
+        [
+            {{"exercise": "Squat", "weight": 100, "reps": 5, "notes": "Hard"}},
+            {{"exercise": "Squat", "weight": 100, "reps": 5, "notes": "Hard"}}
+        ]
+        """
+        response = model.generate_content(prompt)
+        
+        # Clean up the text (remove markdown `json ... ` if present)
+        cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(cleaned_text)
+        
+    except Exception as e:
+        st.error(f"AI Error ({MODEL_NAME}): {e}")
+        return None
 
 # --- MAIN FORM ---
 with st.form("workout_form"):
-    user_input = st.text_area("Tell me what you did:", height=100)
+    user_input = st.text_area("Tell me what you did:", height=100, placeholder="e.g., Bench Press 60kg for 10 reps...")
     submitted = st.form_submit_button("Log Workout")
 
 if submitted and user_input:
     with st.spinner("AI is processing..."):
-        workout_data, model_used = parse_workout(user_input)
+        workout_data = parse_workout(user_input)
         
         if workout_data:
-            st.success(f"Success! (Used model: {model_used})")
-            
             # Save to Sheets
             client = get_db_connection()
             sh = client.open("My Workout DB")
+            
+            # Save to 'Exercises' tab
             ex_sheet = sh.worksheet("Exercises")
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
@@ -112,6 +82,16 @@ if submitted and user_input:
                 ])
             
             ex_sheet.append_rows(rows)
+            
+            st.success("✅ Workout Logged!")
             st.table(pd.DataFrame(workout_data))
         else:
             st.error("Could not parse data.")
+
+# --- HISTORY PREVIEW ---
+if st.checkbox("Show History"):
+    client = get_db_connection()
+    sheet = client.open("My Workout DB").worksheet("Exercises")
+    data = sheet.get_all_records()
+    if data:
+        st.dataframe(pd.DataFrame(data).tail(5))
