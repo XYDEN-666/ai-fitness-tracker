@@ -9,7 +9,7 @@ import pandas as pd
 # --- CONFIGURATION ---
 # 1. Setup AI
 genai.configure(api_key=st.secrets["general"]["gemini_api_key"])
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-pro')
 
 # 2. Setup Database
 def get_db_connection():
