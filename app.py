@@ -8,7 +8,9 @@ from datetime import datetime
 def get_db_connection():
     # We load the secret key we saved in Streamlit Cloud
     key_content = st.secrets["gcp_service_account"]["json_key"]
-    creds_dict = json.loads(key_content)
+    
+    # FIX: strict=False allows "control characters" (like newlines) inside the string
+    creds_dict = json.loads(key_content, strict=False)
     
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
