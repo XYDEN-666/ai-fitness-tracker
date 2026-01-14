@@ -97,8 +97,8 @@ def parse_workout(text):
         return None
 
 # --- UI HEADER ---
-st.markdown("<h1 style='text-align: center; color: #E63946;'>🔥 XYDEN GYM</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #888;'>AI Powered • No Excuses</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #E63946;'>BatCave</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #888;'>Prasad Kaduva Prasad</p>", unsafe_allow_html=True)
 
 # --- TABS ---
 tab1, tab2 = st.tabs(["📝 LOG WORKOUT", "📈 STATS"])
