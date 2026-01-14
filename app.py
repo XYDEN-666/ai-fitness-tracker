@@ -7,8 +7,8 @@ from datetime import datetime
 import pandas as pd
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Gym AI", page_icon="💪")
-st.title("💪 AI Workout Logger")
+st.set_page_config(page_title="Gym AI", page_icon="💪", layout="centered")
+st.title("💪 AI Workout Tracker")
 
 # 1. Setup AI
 try:
@@ -16,8 +16,7 @@ try:
 except Exception as e:
     st.error(f"API Key Error: {e}")
 
-# --- DATABASE CONNECTION (OPTIMIZED) ---
-# This decorator keeps the connection open so it doesn't reload every time
+# 2. Database Connection (Cached)
 @st.cache_resource
 def get_db_connection():
     key_content = st.secrets["gcp_service_account"]["json_key"]
@@ -27,70 +26,118 @@ def get_db_connection():
     client = gspread.authorize(creds)
     return client
 
-# --- THE BRAIN ---
+# 3. AI Parsing Logic
 def parse_workout(text):
     MODEL_NAME = 'models/gemini-2.5-flash'
     try:
         model = genai.GenerativeModel(MODEL_NAME)
         prompt = f"""
         Extract workout data from: "{text}".
-        Return ONLY a JSON list with keys: "exercise", "weight" (int), "reps" (int), "notes".
+        Return ONLY a JSON list with keys: "exercise" (Standardize name, e.g. 'Bench Press'), "weight" (int), "reps" (int), "notes".
         If weight is missing, use 0.
         """
         response = model.generate_content(prompt)
         cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(cleaned_text)
     except Exception as e:
-        st.error(f"AI Error: {e}")
         return None
 
-# --- MAIN FORM ---
-with st.form("workout_form"):
-    user_input = st.text_area("Tell me what you did:", height=100, placeholder="e.g., Bench Press 60kg for 10 reps...")
-    submitted = st.form_submit_button("Log Workout")
+# --- UI LAYOUT: TABS ---
+tab1, tab2 = st.tabs(["📝 Log Workout", "📈 Check Progress"])
 
-if submitted and user_input:
-    # 1. AI Processing
-    with st.spinner("AI is thinking..."):
-        workout_data = parse_workout(user_input)
+# ==========================================
+# TAB 1: LOGGING (The Input)
+# ==========================================
+with tab1:
+    st.header("New Entry")
+    with st.form("workout_form"):
+        user_input = st.text_area("How was your workout?", height=120, 
+                                  placeholder="e.g., Squats 80kg for 5 reps, 3 sets.")
+        submitted = st.form_submit_button("Log It")
 
-    # 2. Saving to DB
-    if workout_data:
-        with st.spinner("Saving to Google Sheets..."):
-            try:
-                client = get_db_connection()
-                sh = client.open("My Workout DB")
-                ex_sheet = sh.worksheet("Exercises")
-                
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                rows = []
-                for item in workout_data:
-                    rows.append([
-                        timestamp,
-                        item.get('exercise', 'Unknown'),
-                        item.get('weight', 0),
-                        item.get('reps', 0),
-                        item.get('notes', '')
-                    ])
-                
-                ex_sheet.append_rows(rows)
-                st.success(f"✅ Saved {len(rows)} sets!")
-                
-            except Exception as e:
-                st.error(f"Database Error: {e}")
-                # Clear cache if connection dropped
-                st.cache_resource.clear()
+    if submitted and user_input:
+        with st.spinner("AI is analyzing..."):
+            workout_data = parse_workout(user_input)
+            
+            if workout_data:
+                try:
+                    client = get_db_connection()
+                    sh = client.open("My Workout DB")
+                    ex_sheet = sh.worksheet("Exercises")
+                    
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    # We save the DATE separately for easier charting
+                    date_only = datetime.now().strftime("%Y-%m-%d")
+                    
+                    rows = []
+                    for item in workout_data:
+                        rows.append([
+                            date_only, # Column A: Date
+                            item.get('exercise', 'Unknown').title(), # Column B: Exercise (Title Case)
+                            item.get('weight', 0), # Column C: Weight
+                            item.get('reps', 0),   # Column D: Reps
+                            item.get('notes', '')  # Column E: Notes
+                        ])
+                    
+                    ex_sheet.append_rows(rows)
+                    st.success(f"✅ Logged {len(rows)} sets!")
+                    
+                    # Clear cache so the charts update immediately
+                    st.cache_data.clear()
+                    
+                except Exception as e:
+                    st.error(f"Save Error: {e}")
+            else:
+                st.error("AI couldn't understand that. Try being more specific.")
+
+# ==========================================
+# TAB 2: ANALYTICS (The Charts)
+# ==========================================
+with tab2:
+    st.header("Growth Tracker")
+    
+    # Function to fetch data (Cached so it's fast)
+    @st.cache_data(ttl=60) # Refreshes every 60 seconds automatically
+    def load_data():
+        try:
+            client = get_db_connection()
+            sheet = client.open("My Workout DB").worksheet("Exercises")
+            data = sheet.get_all_records()
+            return pd.DataFrame(data)
+        except:
+            return pd.DataFrame()
+
+    df = load_data()
+
+    if not df.empty:
+        # 1. Exercise Selector
+        # Get unique exercises, sort them
+        all_exercises = sorted(df['Exercise'].unique().tolist())
+        selected_exercise = st.selectbox("Select Exercise to Analyze:", all_exercises)
+        
+        # 2. Filter Data
+        # We look only at the exercise you selected
+        subset = df[df['Exercise'] == selected_exercise].copy()
+        
+        # Convert columns to numbers just in case
+        subset['Weight'] = pd.to_numeric(subset['Weight'], errors='coerce')
+        subset['Reps'] = pd.to_numeric(subset['Reps'], errors='coerce')
+        
+        # 3. Calculate "Max Weight" per Date
+        # This shows your strength gains
+        progress_df = subset.groupby('Date')['Weight'].max().reset_index()
+        
+        # 4. Show Chart
+        st.subheader(f"Max Weight: {selected_exercise}")
+        st.line_chart(progress_df.set_index('Date'))
+        
+        # 5. Stats
+        best_lift = progress_df['Weight'].max()
+        st.metric("All Time Best (1RM Estimate)", f"{best_lift} kg")
+        
+        # 6. Recent History Table
+        with st.expander(f"See History for {selected_exercise}"):
+            st.dataframe(subset[['Date', 'Weight', 'Reps', 'Notes']].tail(10))
+            
     else:
-        st.error("Could not parse data.")
-
-# --- ANALYTICS PREVIEW (The Next Step) ---
-st.divider()
-st.subheader("📊 Quick Stats")
-if st.button("Refresh Charts"):
-    client = get_db_connection()
-    sheet = client.open("My Workout DB").worksheet("Exercises")
-    data = sheet.get_all_records()
-    if data:
-        df = pd.DataFrame(data)
-        # Quick Chart: Total Reps per Exercise
-        st.bar_chart(df.groupby("Exercise")["Reps"].sum())
+        st.info("No data yet. Go to the 'Log' tab and enter your first workout!")
