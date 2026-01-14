@@ -3,13 +3,13 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import google.generativeai as genai
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Gym AI", page_icon="🔥", layout="centered")
 
-# --- CUSTOM CSS (Red & Black Theme) ---
+# --- CUSTOM CSS ---
 st.markdown("""
     <style>
     .stApp {background-color: #0E1117;}
@@ -27,6 +27,11 @@ st.markdown("""
     }
     .stButton > button:hover {background-color: #FF4B4B; color: white;}
     header, footer {visibility: hidden;}
+    
+    /* Progress Bar Color */
+    .stProgress > div > div > div > div {
+        background-color: #E63946;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -45,39 +50,24 @@ def get_db_connection():
     client = gspread.authorize(creds)
     return client
 
-# --- THE SMART BRAIN (UPDATED) ---
-# --- THE PRECISION BRAIN (Updated) ---
+# --- AI PARSER ---
 def parse_workout(text):
     MODEL_NAME = 'models/gemini-2.5-flash'
     try:
         model = genai.GenerativeModel(MODEL_NAME)
-        # We give the AI specific naming conventions
         prompt = f"""
         You are a strict Gym Data Manager. Convert this text: "{text}" into JSON.
         
         CRITICAL NAMING RULES:
-        1. "exercise": You must distinguish between Equipment (Barbell vs Dumbbell) and Angle (Flat vs Incline vs Decline).
-        2. If user says "Bench Press" or "Bench", default to "Flat Barbell Bench Press".
-        3. If user says "DB Bench", map to "Flat Dumbbell Press".
-        4. If user says "Incline", map to "Incline Barbell Bench Press" unless they say "Dumbbell/DB".
+        1. "exercise": Distinguish Equipment (Barbell/Dumbbell) and Angle (Flat/Incline/Decline).
+        2. "muscle_group": MUST be one of: [Chest, Back, Legs, Shoulders, Biceps, Triceps, Abs, Cardio].
         
-        NAMING EXAMPLES:
+        EXAMPLES:
         - "bench" -> "Flat Barbell Bench Press"
-        - "incline bench" -> "Incline Barbell Bench Press"
-        - "incline db press" -> "Incline Dumbbell Press"
-        - "decline bench" -> "Decline Barbell Bench Press"
-        - "shoulder press" -> "Overhead Barbell Press"
-        - "db shoulder press" -> "Seated Dumbbell Shoulder Press"
+        - "incline db" -> "Incline Dumbbell Press"
+        - "squat" -> "Barbell Back Squat"
         
-        OTHER RULES:
-        - "muscle_group": MUST be one of: [Chest, Back, Legs, Shoulders, Biceps, Triceps, Abs, Cardio].
-        - "weight" (int), "reps" (int), "notes" (string).
-        
-        Example JSON Output:
-        [
-            {{"exercise": "Incline Dumbbell Press", "muscle_group": "Chest", "weight": 30, "reps": 10, "notes": "Good stretch"}},
-            {{"exercise": "Flat Barbell Bench Press", "muscle_group": "Chest", "weight": 80, "reps": 5, "notes": "Heavy"}}
-        ]
+        Output JSON list with keys: exercise, muscle_group, weight, reps, notes.
         """
         response = model.generate_content(prompt)
         cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
@@ -85,11 +75,35 @@ def parse_workout(text):
     except:
         return None
 
+# --- AI COACH LOGIC ---
+def get_coach_advice(df):
+    # Prepare a summary of the last 30 days
+    summary = df['Muscle Group'].value_counts().to_string()
+    
+    MODEL_NAME = 'models/gemini-2.5-flash'
+    try:
+        model = genai.GenerativeModel(MODEL_NAME)
+        prompt = f"""
+        I am a bodybuilder. Here is my set volume per muscle group for the last 30 days:
+        {summary}
+        
+        Analyze my training split.
+        1. Identify the Most Neglected muscle group.
+        2. Identify the Most Overworked muscle group.
+        3. Give me 1 specific actionable tip to balance my physique.
+        
+        Keep it short, brutal, and motivating. Max 3 sentences.
+        """
+        response = model.generate_content(prompt)
+        return response.text
+    except:
+        return "Coach is on a coffee break. Try again later."
+
 # --- UI HEADER ---
 st.markdown("<h1 style='text-align: center; color: #E63946;'>🔥 XYDEN GYM</h1>", unsafe_allow_html=True)
 
 # --- TABS ---
-tab1, tab2 = st.tabs(["📝 LOG", "📈 STATS"])
+tab1, tab2, tab3 = st.tabs(["📝 LOG", "📈 STATS", "🧠 COACH"])
 
 # ==========================================
 # TAB 1: LOGGING
@@ -97,13 +111,13 @@ tab1, tab2 = st.tabs(["📝 LOG", "📈 STATS"])
 with tab1:
     st.markdown("###")
     with st.form("workout_form"):
-        st.caption("Auto-Detects Muscle Group & Fixes Names")
+        st.caption("Log your sets:")
         user_input = st.text_area("Input", height=100, label_visibility="collapsed",
-                                  placeholder="e.g. Bench 60kg 10 reps, then Squats...")
+                                  placeholder="e.g. Incline DB Press 30kg 10 reps...")
         submitted = st.form_submit_button("LOG SESSION")
 
     if submitted and user_input:
-        with st.spinner("AI is categorizing..."):
+        with st.spinner("Processing..."):
             workout_data = parse_workout(user_input)
             if workout_data:
                 try:
@@ -120,7 +134,7 @@ with tab1:
                             item.get('weight', 0),
                             item.get('reps', 0),
                             item.get('notes', ''),
-                            item.get('muscle_group', 'Other') # New Column F
+                            item.get('muscle_group', 'Other')
                         ])
                     
                     ex_sheet.append_rows(rows)
@@ -128,33 +142,30 @@ with tab1:
                     
                     st.success(f"🔥 Added {len(rows)} sets!")
                     
-                    # Smart Preview Card
                     with st.container():
                         for item in workout_data:
-                            # Color code the groups
-                            group_color = "#E63946" # Default Red
+                            group_color = "#E63946"
                             if item['muscle_group'] == 'Legs': group_color = "#457b9d"
                             if item['muscle_group'] == 'Back': group_color = "#2a9d8f"
                             
                             st.markdown(f"""
                             <div style="background-color: #262730; padding: 10px; border-radius: 10px; margin-bottom: 5px; border-left: 5px solid {group_color};">
-                                <span style="font-size: 0.8em; color: {group_color}; text-transform: uppercase; letter-spacing: 1px;">{item['muscle_group']}</span><br>
-                                <strong style="color:white; font-size: 1.1em;">{item['exercise']}</strong><br>
-                                <span style="color:#aaa">{item['weight']}kg x {item['reps']}</span>
+                                <span style="font-size: 0.8em; color: {group_color}; text-transform: uppercase;">{item['muscle_group']}</span><br>
+                                <strong style="color:white;">{item['exercise']}</strong>
+                                <span style="color:#aaa; float:right;">{item['weight']}kg x {item['reps']}</span>
                             </div>
                             """, unsafe_allow_html=True)
 
                 except Exception as e:
                     st.error(f"Error: {e}")
             else:
-                st.error("AI couldn't process that.")
+                st.error("AI Error.")
 
 # ==========================================
-# TAB 2: SMART ANALYTICS
+# TAB 2: STATS
 # ==========================================
 with tab2:
     st.markdown("###")
-    
     @st.cache_data(ttl=60)
     def load_data():
         try:
@@ -162,17 +173,8 @@ with tab2:
             sheet = client.open("My Workout DB").worksheet("Exercises")
             data = sheet.get_all_records()
             df = pd.DataFrame(data)
-            
-            # CLEAN UP DATA FOR "SMART" VIEW
-            # 1. Force Title Case (fixes "bench" vs "Bench")
             df['Exercise'] = df['Exercise'].astype(str).str.title().str.strip()
-            
-            # 2. Handle missing muscle groups in old data
-            if 'Muscle Group' not in df.columns:
-                df['Muscle Group'] = 'Uncategorized'
-            else:
-                df['Muscle Group'] = df['Muscle Group'].replace('', 'Uncategorized')
-                
+            if 'Muscle Group' not in df.columns: df['Muscle Group'] = 'Uncategorized'
             return df
         except:
             return pd.DataFrame()
@@ -180,38 +182,63 @@ with tab2:
     df = load_data()
 
     if not df.empty:
-        # STEP 1: SELECT MUSCLE GROUP
-        # Get unique groups, ensure your main ones are at top
-        priority_groups = ['Chest', 'Back', 'Legs', 'Shoulders', 'Biceps', 'Triceps', 'Abs']
-        available_groups = df['Muscle Group'].unique().tolist()
-        # Sort so priority groups come first
-        sorted_groups = [g for g in priority_groups if g in available_groups] + [g for g in available_groups if g not in priority_groups]
+        # Muscle Group Filter
+        groups = sorted(df['Muscle Group'].unique().tolist())
+        selected_group = st.selectbox("Filter by Muscle:", groups)
         
-        selected_group = st.selectbox("1. Select Muscle Group", sorted_groups)
+        # Exercise Filter
+        subset = df[df['Muscle Group'] == selected_group]
+        exercises = sorted(subset['Exercise'].unique().tolist())
         
-        # STEP 2: FILTER EXERCISES
-        # Only show exercises that belong to the selected group
-        subset_group = df[df['Muscle Group'] == selected_group]
-        available_exercises = sorted(subset_group['Exercise'].unique().tolist())
-        
-        if available_exercises:
-            selected_exercise = st.selectbox("2. Select Exercise", available_exercises)
+        if exercises:
+            selected_ex = st.selectbox("Select Movement:", exercises)
             
-            # STEP 3: SHOW CHART
-            exercise_data = subset_group[subset_group['Exercise'] == selected_exercise].copy()
-            exercise_data['Weight'] = pd.to_numeric(exercise_data['Weight'], errors='coerce')
+            # Chart
+            ex_data = subset[subset['Exercise'] == selected_ex].copy()
+            ex_data['Weight'] = pd.to_numeric(ex_data['Weight'], errors='coerce')
+            progress = ex_data.groupby('Date')['Weight'].max().reset_index()
             
-            # Find max weight per day
-            progress = exercise_data.groupby('Date')['Weight'].max().reset_index()
-            
-            st.markdown(f"<h3 style='color:#E63946'>{selected_exercise} Progress</h3>", unsafe_allow_html=True)
+            st.markdown(f"<h3 style='color:#E63946'>{selected_ex}</h3>", unsafe_allow_html=True)
             st.line_chart(progress.set_index('Date'), color="#E63946")
             
-            # Stats
+            # PR Badge
             max_lift = progress['Weight'].max()
-            st.info(f"🏆 Personal Record: **{max_lift} kg**")
+            st.markdown(f"""
+            <div style="background-color: #262730; padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #E63946;">
+                <span style="color: #aaa;">ALL TIME BEST</span><br>
+                <span style="font-size: 2em; font-weight: bold; color: white;">{max_lift} <span style="font-size: 0.5em; color: #E63946;">KG</span></span>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.warning(f"No exercises found for {selected_group} yet.")
-            
+            st.info("No exercises found.")
+
+# ==========================================
+# TAB 3: AI COACH (WEAKNESS DETECTOR)
+# ==========================================
+with tab3:
+    st.markdown("###")
+    st.header("⚖️ Physique Balance")
+    
+    if not df.empty:
+        # 1. VISUAL SPLIT (Bar Chart)
+        st.caption("Sets per Muscle Group (All Time)")
+        split_counts = df['Muscle Group'].value_counts()
+        st.bar_chart(split_counts, color="#E63946")
+        
+        # 2. AI AUDIT BUTTON
+        st.write("---")
+        st.caption("Ask the AI where you are lacking:")
+        
+        if st.button("GENERATE REPORT"):
+            with st.spinner("Analyzing your weak points..."):
+                advice = get_coach_advice(df)
+                
+                # Show advice in a nice card
+                st.markdown(f"""
+                <div style="background-color: #1E1E1E; padding: 20px; border-radius: 10px; border-left: 5px solid #E63946;">
+                    <h3 style="margin-top:0; color: #E63946;">🛡️ Coach Assessment</h3>
+                    <p style="font-size: 1.1em; line-height: 1.5; color: #ddd;">{advice}</p>
+                </div>
+                """, unsafe_allow_html=True)
     else:
-        st.info("Log your first workout to see stats!")
+        st.info("Log more workouts to unlock the Coach.")
